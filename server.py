@@ -376,6 +376,18 @@ class VCMP:
                             + enc
                         )
 
+                    case "disconnect":
+                        if not self.peers:
+                            logger.debug("No peers are present")
+                            websocket.close()
+                            return
+
+                        transports = list(self.peers.keys())
+                        peer_transport = transports[0]
+                        peer = self.peers[peer_transport]
+                        logger.debug("Closing peer connection")
+                        peer_transport.close()
+
             except json.JSONDecodeError:
                 logger.error("Failed to decode event json")
                 websocket.close()

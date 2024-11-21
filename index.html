@@ -56,6 +56,7 @@
         <input type="text" id="address" placeholder="Enter Peer Address (IP)" />
         <input type="number" id="port" placeholder="Enter Peer Port" />
         <input type="button" id="connectBtn" value="Connect" />
+        <input type="button" id="disconnectBtn" value="Disconnect" disabled />
     </div>
     
     <div id="status"></div>
@@ -74,31 +75,25 @@
     const statusElement = document.getElementById("status");
     const messagesElement = document.getElementById("messages");
     const connectBtn = document.getElementById("connectBtn");
+    const disconnectBtn = document.getElementById("disconnectBtn");
     const messageInput = document.getElementById("messageInput");
     const sendMessageBtn = document.getElementById("sendMessage");
     const addressInput = document.getElementById("address");
     const portInput = document.getElementById("port");
     
-    // Connect to WebSocket server
-    connectBtn.addEventListener("click", function() {
-        const wsUrl = `ws://localhost:44444` // Replace with actual WebSocket URL if needed
+    // Automatically connect to WebSocket server on page load
+    window.onload = function() {
+        const wsUrl = `ws://localhost:44444`; // Replace with your WebSocket URL
         ws = new WebSocket(wsUrl);
         
         ws.onopen = function() {
             console.log("Connected to WebSocket server");
             statusElement.innerHTML = "Connected to WebSocket server.";
-            connected = true;
-            messageInput.disabled = false;
-            sendMessageBtn.disabled = false;
-            
-            // Send connection event to the server
-            const address = addressInput.value;
-            const port = portInput.value;
-            ws.send(JSON.stringify({
-                event: "connect",
-                address: address,
-                port: parseInt(port)
-            }));
+
+            connected = false;
+            messageInput.disabled = true;
+            sendMessageBtn.disabled = true;
+            disconnectBtn.disabled = true;
         };
 
         ws.onmessage = function(event) {
@@ -108,11 +103,24 @@
             // Handle events
             if (message.event === "user_connect") {
                 appendMessage("New peer connected!");
+
                 connected = true;
                 messageInput.disabled = false;
                 sendMessageBtn.disabled = false;
+
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+
             } else if (message.event === "user_disconnect") {
                 appendMessage("Peer disconnected.");
+
+                connected = false;
+                messageInput.disabled = true;
+                sendMessageBtn.disabled = true;
+
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+
             } else if (message.event == "user_message") {
                 appendMessage("Received message: " + message.data);
             }
@@ -121,15 +129,49 @@
         ws.onerror = function(error) {
             console.error("WebSocket error:", error);
             statusElement.innerHTML = "Error connecting to WebSocket server.";
+
+            if (connected) {
+                ws.send(JSON.stringify({
+                    event: "disconnect"
+                })) 
+                connected = false;
+            }
+
+            messageInput.disabled = true;
+            sendMessageBtn.disabled = true;
+            connectBtn.disabled = false;
+            disconnectBtn.disabled = true;
         };
 
         ws.onclose = function() {
             console.log("WebSocket closed");
             statusElement.innerHTML = "Disconnected from WebSocket server.";
-            connected = false;
+
+            if (connected) {
+                ws.send(JSON.stringify({
+                    event: "disconnect"
+                })) 
+                connected = false;
+            }
+
             messageInput.disabled = true;
             sendMessageBtn.disabled = true;
+            connectBtn.disabled = false;
+            disconnectBtn.disabled = true;
         };
+    };
+
+    // Handle manual connection to another peer (if needed)
+    connectBtn.addEventListener("click", function() {
+        if (ws && !connected) {
+            const address = addressInput.value;
+            const port = portInput.value;
+            ws.send(JSON.stringify({
+                event: "connect",
+                address: address,
+                port: parseInt(port)
+            }));
+        }
     });
 
     // Send a message to the server
@@ -142,6 +184,21 @@
             }));
             appendMessage("You: " + message);
             messageInput.value = "";
+        }
+    });
+
+    disconnectBtn.addEventListener("click", function() {
+        if (ws && connected) {
+            ws.send(JSON.stringify({
+                event: "disconnect"
+            })) 
+
+            connected = false;
+
+            messageInput.disabled = true;
+            sendMessageBtn.disabled = true;
+            connectBtn.disabled = false;
+            disconnectBtn.disabled = true;
         }
     });
 
