@@ -328,7 +328,7 @@ class VCMP:
                         addr = (j.get("address"), j.get("port"))
                         if not addr[0] or not addr[1]:
                             logger.debug("Failed to connect: no address or port")
-                            websocket.close()
+                            await websocket.close()
                             return
 
                         try:
@@ -344,17 +344,18 @@ class VCMP:
                             logger.error("Failed to create a peer connection:", e)
 
                             if self.ws_client:
-                                self.ws_client.send(json.dumps({"event": "disconnect"}))
+                                await self.ws_client.send(json.dumps({"event": "disconnect"}))
+
                     case "send_message":
                         if not self.peers:
                             logger.debug("No peers are present")
-                            websocket.close()
+                            await websocket.close()
                             return
 
                         data = j.get("data")
                         if not data:
                             logger.debug("WS client didnt specify data field")
-                            websocket.close()
+                            await websocket.close()
                             return
 
                         logger.debug(f"Querying message send request: {data}")
@@ -379,7 +380,7 @@ class VCMP:
                     case "disconnect":
                         if not self.peers:
                             logger.debug("No peers are present")
-                            websocket.close()
+                            await websocket.close()
                             return
 
                         transports = list(self.peers.keys())
@@ -390,7 +391,7 @@ class VCMP:
 
             except json.JSONDecodeError:
                 logger.error("Failed to decode event json")
-                websocket.close()
+                await websocket.close()
 
         self.ws_client = None
 
