@@ -1,25 +1,159 @@
-<html>
-    <head>
-    </head>
-    <body>
-        <script>
-            let socket = new WebSocket("ws://localhost:44444")
-            socket.addEventListener("open", (event) => {
-                console.log("Websocket opened");
-                socket.send(JSON.stringify({event: "connect", address: ".onion", port: 55555}))
-            });
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VCMP Chat Platform</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background-color: #f4f4f9;
+            color: #333;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+        #messages {
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin-bottom: 20px;
+            height: 300px;
+            overflow-y: auto;
+            background-color: #f9f9f9;
+            border-radius: 8px;
+        }
+        input[type="text"], input[type="button"] {
+            padding: 10px;
+            font-size: 16px;
+            margin-top: 10px;
+            width: calc(100% - 22px);
+            border-radius: 4px;
+            border: 1px solid #ccc;
+        }
+        .connect-form {
+            display: flex;
+            flex-direction: column;
+            margin-bottom: 20px;
+        }
+        .connect-form input {
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
 
-            socket.addEventListener("message", (event) => {
-                console.log("Message from server ", event.data);
-            });
+<div class="container">
+    <h1>VCMP Chat Platform</h1>
+    
+    <!-- Connect Form -->
+    <div class="connect-form" id="connectForm">
+        <input type="text" id="address" placeholder="Enter Peer Address (IP)" />
+        <input type="number" id="port" placeholder="Enter Peer Port" />
+        <input type="button" id="connectBtn" value="Connect" />
+    </div>
+    
+    <div id="status"></div>
 
-            socket.addEventListener("error", (event) => {
-                console.error("WebSocket error observed:", event);
-            });
+    <!-- Chat Messages -->
+    <div id="messages"></div>
+    
+    <!-- Message Input -->
+    <input type="text" id="messageInput" placeholder="Enter message" disabled />
+    <input type="button" id="sendMessage" value="Send" disabled />
+</div>
 
-            socket.addEventListener("close", (event) => {
-                console.log("Websocket closed");
-            });
-        </script>
-    </body>
+<script>
+    let ws;
+    let connected = false;
+    const statusElement = document.getElementById("status");
+    const messagesElement = document.getElementById("messages");
+    const connectBtn = document.getElementById("connectBtn");
+    const messageInput = document.getElementById("messageInput");
+    const sendMessageBtn = document.getElementById("sendMessage");
+    const addressInput = document.getElementById("address");
+    const portInput = document.getElementById("port");
+    
+    // Connect to WebSocket server
+    connectBtn.addEventListener("click", function() {
+        const wsUrl = `ws://localhost:44444` // Replace with actual WebSocket URL if needed
+        ws = new WebSocket(wsUrl);
+        
+        ws.onopen = function() {
+            console.log("Connected to WebSocket server");
+            statusElement.innerHTML = "Connected to WebSocket server.";
+            connected = true;
+            messageInput.disabled = false;
+            sendMessageBtn.disabled = false;
+            
+            // Send connection event to the server
+            const address = addressInput.value;
+            const port = portInput.value;
+            ws.send(JSON.stringify({
+                event: "connect",
+                address: address,
+                port: parseInt(port)
+            }));
+        };
+
+        ws.onmessage = function(event) {
+            const message = JSON.parse(event.data);
+            console.log("Message from server:", message);
+
+            // Handle events
+            if (message.event === "user_connect") {
+                appendMessage("New peer connected!");
+                connected = true;
+                messageInput.disabled = false;
+                sendMessageBtn.disabled = false;
+            } else if (message.event === "user_disconnect") {
+                appendMessage("Peer disconnected.");
+            } else if (message.event == "user_message") {
+                appendMessage("Received message: " + message.data);
+            }
+        };
+
+        ws.onerror = function(error) {
+            console.error("WebSocket error:", error);
+            statusElement.innerHTML = "Error connecting to WebSocket server.";
+        };
+
+        ws.onclose = function() {
+            console.log("WebSocket closed");
+            statusElement.innerHTML = "Disconnected from WebSocket server.";
+            connected = false;
+            messageInput.disabled = true;
+            sendMessageBtn.disabled = true;
+        };
+    });
+
+    // Send a message to the server
+    sendMessageBtn.addEventListener("click", function() {
+        const message = messageInput.value;
+        if (ws && message.trim() && connected) {
+            ws.send(JSON.stringify({
+                event: "send_message",
+                data: message
+            }));
+            appendMessage("You: " + message);
+            messageInput.value = "";
+        }
+    });
+
+    // Display incoming messages
+    function appendMessage(message) {
+        const msgElement = document.createElement("div");
+        msgElement.textContent = message;
+        messagesElement.appendChild(msgElement);
+        messagesElement.scrollTop = messagesElement.scrollHeight; // Scroll to the bottom
+    }
+
+</script>
+
+</body>
 </html>

@@ -10,3 +10,4 @@ class VCMPPacket(Enum):
     PUBKEY = 3
     PUBKEY_ACK = 4
     READY = 5
+    DATA = 6

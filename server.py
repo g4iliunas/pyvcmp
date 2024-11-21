@@ -48,13 +48,44 @@ def is_ready(header) -> bool:
     return header == (VCMP_MAGIC, VCMP_VERSION, VCMPPacket.READY.value)
 
 
+def is_data(header) -> bool:
+    return header == (VCMP_MAGIC, VCMP_VERSION, VCMPPacket.DATA.value)
+
+
 def extract_pubkey(data: bytes):
     args = data[len(VCMP_MAGIC) + 2 :]
     pubkey_len = struct.unpack(">i", args[:4])[0]
     pubkey_der = args[4:]
     return serialization.load_der_public_key(pubkey_der)
 
-    # print(a.encrypt("test".encode("ascii"), padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)))
+
+def extract_data(data: bytes) -> tuple[bytes, int]:
+    args = data[len(VCMP_MAGIC) + 2 :]
+    data_len = struct.unpack(">i", args[:4])[0]
+    data = args[4:]
+    return data, data_len
+
+
+def decrypt_data(data: bytes):
+    return rsa_private_key.decrypt(
+        data,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None,
+        ),
+    )
+
+
+def encrypt_data(data: bytes, pubkey):
+    return pubkey.encrypt(
+        data,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None,
+        ),
+    )
 
 
 class ListenerProtocol(asyncio.Protocol):
@@ -98,8 +129,35 @@ class ListenerProtocol(asyncio.Protocol):
                 if is_ready(header):
                     logger.debug("Peer is ready to be communicated with!!")
                     self.state = 3
+
+                    if self.vcmp.ws_client:
+                        # todo: more detailed connect event
+                        asyncio.gather(
+                            self.vcmp.ws_client.send(
+                                json.dumps({"event": "user_connect"})
+                            )
+                        )
                 else:
                     logger.debug("Peer not ready")
+                    self.transport.close()
+            case 3:
+                logger.debug("Received data from a ready peer")
+                if is_data(header):
+                    enc_data, length = extract_data(data)
+                    dec = decrypt_data(enc_data)
+                    if self.vcmp.ws_client:
+                        asyncio.gather(
+                            self.vcmp.ws_client.send(
+                                json.dumps(
+                                    {
+                                        "event": "user_message",
+                                        "data": dec.decode("utf-8"),
+                                    }
+                                )
+                            )
+                        )
+                else:
+                    logger.debug("Not data")
                     self.transport.close()
 
     def connection_lost(self, exc):
@@ -108,7 +166,9 @@ class ListenerProtocol(asyncio.Protocol):
 
         if self.vcmp.ws_client:
             # todo: more detailed disconnect event
-            self.vcmp.ws_client.send(json.dumps({"event": "disconnect"}))
+            asyncio.gather(
+                self.vcmp.ws_client.send(json.dumps({"event": "user_disconnect"}))
+            )
 
         logger.debug("Connection lost")
 
@@ -168,11 +228,36 @@ class PeerProtocol(asyncio.Protocol):
                     logger.debug("Sending ready state")
                     self._send_ready()
                     self.state = 2
+
+                    if self.vcmp.ws_client:
+                        # todo: more detailed connect event
+                        asyncio.gather(
+                            self.vcmp.ws_client.send(
+                                json.dumps({"event": "user_connect"})
+                            )
+                        )
                 else:
                     logger.debug("Not pubkey ack")
                     self.transport.close()
             case 2:
-                print("got data from ready peer")
+                logger.debug("Received data from a ready peer")
+                if is_data(header):
+                    enc_data, length = extract_data(data)
+                    dec = decrypt_data(enc_data)
+                    if self.vcmp.ws_client:
+                        asyncio.gather(
+                            self.vcmp.ws_client.send(
+                                json.dumps(
+                                    {
+                                        "event": "user_message",
+                                        "data": dec.decode("utf-8"),
+                                    }
+                                )
+                            )
+                        )
+                else:
+                    logger.debug("Not data")
+                    self.transport.close()
 
     def connection_lost(self, exc):
         if self.transport in self.vcmp.peers:
@@ -180,7 +265,9 @@ class PeerProtocol(asyncio.Protocol):
 
         if self.vcmp.ws_client:
             # todo: more detailed disconnect event
-            self.vcmp.ws_client.send(json.dumps({"event": "disconnect"}))
+            asyncio.gather(
+                self.vcmp.ws_client.send(json.dumps({"event": "user_disconnect"}))
+            )
 
         logger.debug(f"Lost connection. Exc: {exc}")
 
@@ -256,6 +343,36 @@ class VCMP:
 
                             if self.ws_client:
                                 self.ws_client.send(json.dumps({"event": "disconnect"}))
+                    case "send_message":
+                        if not self.peers:
+                            logger.debug("No peers are present")
+                            websocket.close()
+                            return
+
+                        data = j.get("data")
+                        if not data:
+                            logger.debug("WS client didnt specify data field")
+                            websocket.close()
+                            return
+
+                        logger.debug(f"Querying message send request: {data}")
+
+                        # encrypt the message with peer's pubkey
+                        # for now, we will just take self.peers[0]
+                        transports = list(self.peers.keys())
+                        peer_transport = transports[0]
+                        peer = self.peers[peer_transport]
+                        peer_pubkey = peer["pubkey"]
+
+                        enc = encrypt_data(data.encode("utf-8"), peer_pubkey)
+
+                        peer_transport.write(
+                            VCMP_MAGIC
+                            + VCMP_VERSION.to_bytes()
+                            + VCMPPacket.DATA.value.to_bytes()
+                            + len(enc).to_bytes(4)
+                            + enc
+                        )
 
             except json.JSONDecodeError:
                 logger.error("Failed to decode event json")
