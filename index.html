@@ -1,0 +1,25 @@
+<html>
+    <head>
+    </head>
+    <body>
+        <script>
+            let socket = new WebSocket("ws://localhost:44444")
+            socket.addEventListener("open", (event) => {
+                console.log("Websocket opened");
+                socket.send(JSON.stringify({event: "connect", address: ".onion", port: 55555}))
+            });
+
+            socket.addEventListener("message", (event) => {
+                console.log("Message from server ", event.data);
+            });
+
+            socket.addEventListener("error", (event) => {
+                console.error("WebSocket error observed:", event);
+            });
+
+            socket.addEventListener("close", (event) => {
+                console.log("Websocket closed");
+            });
+        </script>
+    </body>
+</html>
