@@ -145,6 +145,7 @@ class ListenerProtocol(asyncio.Protocol):
                 if is_data(header):
                     enc_data, length = extract_data(data)
                     dec = decrypt_data(enc_data)
+                    logging.debug(f"Decrypted data: {dec.decode("utf-8")}")
                     if self.vcmp.ws_client:
                         asyncio.gather(
                             self.vcmp.ws_client.send(
@@ -244,6 +245,7 @@ class PeerProtocol(asyncio.Protocol):
                 if is_data(header):
                     enc_data, length = extract_data(data)
                     dec = decrypt_data(enc_data)
+                    logging.debug(f"Decrypted data: {dec.decode("utf-8")}")
                     if self.vcmp.ws_client:
                         asyncio.gather(
                             self.vcmp.ws_client.send(
