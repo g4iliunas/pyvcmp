@@ -78,11 +78,19 @@ class Base(asyncio.Protocol):
             make_header(VCMPPacket.PUBKEY_ACK if ack else VCMPPacket.PUBKEY) + key
         )
 
-    def _send_opcode(self, opcode: VCMPOpcode):
+    def _send(self, opcode: VCMPOpcode, data: bytes = None):
         return self.transport.write(
             make_header(VCMPPacket.DATA)
             + encrypt_data(
-                opcode.value.to_bytes(1),
+                (
+                    struct.pack(
+                        "!c{}s".format(len(data)),
+                        opcode.value.to_bytes(1),
+                        data,
+                    )
+                    if data
+                    else struct.pack("!c", opcode.value.to_bytes(1))
+                ),
                 self.vcmp.peers[self.transport]["pubkey"],
             ),
         )
@@ -94,21 +102,29 @@ class Base(asyncio.Protocol):
                 "hostname": self.vcmp.hostname,
             }
         )
+        return self._send(
+            VCMPOpcode.IDENTIFY_ACK if ack else VCMPOpcode.IDENTIFY, d.encode("utf-8")
+        )
 
-        return self.transport.write(
-            make_header(VCMPPacket.DATA)
-            + encrypt_data(
-                struct.pack(
-                    "!c{}s".format(len(d)),
-                    (
-                        VCMPOpcode.IDENTIFY_ACK.value.to_bytes(1)
-                        if ack
-                        else VCMPOpcode.IDENTIFY.value.to_bytes(1)
-                    ),
-                    d.encode("utf-8"),
-                ),
-                self.vcmp.peers[self.transport]["pubkey"],
-            ),
+    def _ws_send_user_conn(self):
+        peer = self.vcmp.peers[self.transport]
+        return asyncio.gather(
+            self.vcmp.ws_client.send(
+                json.dumps(
+                    {
+                        "event": "user_connect",
+                        "username": peer["username"],
+                        "hostname": peer["hostname"],
+                    }
+                )
+            )
+        )
+
+    def _ws_send_user_msg(self, message: str):
+        return asyncio.gather(
+            self.vcmp.ws_client.send(
+                json.dumps({"event": "user_message", "data": message})
+            )
         )
 
     def connection_lost(self, exc):
@@ -163,7 +179,8 @@ class ListenerProtocol(Base):
                 if packet_type == VCMPPacket.PUBKEY_ACK.value:
                     logger.debug("Extracting received pubkey")
                     self.vcmp.peers[self.transport] = {
-                        "pubkey": serialization.load_der_public_key(contents)
+                        "pubkey": serialization.load_der_public_key(contents),
+                        "object": super(),
                     }
                     logger.debug("Ending pubkey transaction")
                     self.transport.write(make_header(VCMPPacket.PUBKEY_END))
@@ -192,16 +209,27 @@ class ListenerProtocol(Base):
                             if opcode == VCMPOpcode.IDENTIFY_ACK.value:
                                 d = json.loads(dec_contents)
                                 logger.debug(f"Loaded identification json: {d}")
-                                username, hostname = d["username"], d["hostname"]
+
+                                peer = self.vcmp.peers[self.transport]
+                                peer["username"] = d["username"]
+                                peer["hostname"] = d["hostname"]
+
                                 logger.debug(
-                                    f"Identification username: {username}, hostname: {hostname}"
+                                    f"Identification username: {d["username"]}, hostname: {d["hostname"]}"
                                 )
                                 logger.debug("Ending identification transaction")
-                                self._send_opcode(VCMPOpcode.IDENTIFY_END)
+                                self._send(VCMPOpcode.IDENTIFY_END)
                                 self.state = 5
+
+                                if self.vcmp.ws_client:
+                                    self._ws_send_user_conn()
                             else:
                                 logger.debug("Not opcode IDENTIFY_END")
                                 self.transport.close()
+                        case _:
+                            if opcode == VCMPOpcode.TEXT.value:
+                                if self.vcmp.ws_client:
+                                    self._ws_send_user_msg(dec_contents.decode("utf-8"))
                 else:
                     logger.debug("Not data")
                     self.transport.close()
@@ -241,7 +269,8 @@ class PeerProtocol(Base):
                 if packet_type == VCMPPacket.PUBKEY.value:
                     logger.debug("Extracting received pubkey")
                     self.vcmp.peers[self.transport] = {
-                        "pubkey": serialization.load_der_public_key(contents)
+                        "pubkey": serialization.load_der_public_key(contents),
+                        "object": super(),
                     }
                     logger.debug("Sending pubkey ACK")
                     self._send_pubkey(ack=True)
@@ -253,7 +282,7 @@ class PeerProtocol(Base):
                 if packet_type == VCMPPacket.PUBKEY_END.value:
                     logger.debug("Ended pubkey transaction")
                     logger.debug("Initiating an identification transaction")
-                    self._send_opcode(VCMPOpcode.IDENTIFY_BEGIN)
+                    self._send(VCMPOpcode.IDENTIFY_BEGIN)
                     self.state = 3
                 else:
                     logger.debug("Not pubkey end")
@@ -272,9 +301,13 @@ class PeerProtocol(Base):
                                 # parse identification
                                 d = json.loads(dec_contents)
                                 logger.debug(f"Loaded identification json: {d}")
-                                username, hostname = d["username"], d["hostname"]
+
+                                peer = self.vcmp.peers[self.transport]
+                                peer["username"] = d["username"]
+                                peer["hostname"] = d["hostname"]
+
                                 logger.debug(
-                                    f"Identification username: {username}, hostname: {hostname}"
+                                    f"Identification username: {d["username"]}, hostname: {d["hostname"]}"
                                 )
                                 logger.debug("Sending information")
                                 self._send_identify(ack=True)
@@ -286,9 +319,16 @@ class PeerProtocol(Base):
                             if opcode == VCMPOpcode.IDENTIFY_END.value:
                                 logger.debug("Ended identification transaction")
                                 self.state = 5
+
+                                if self.vcmp.ws_client:
+                                    self._ws_send_user_conn()
                             else:
                                 logger.debug("Not opcode IDENTIFY_END")
                                 self.transport.close()
+                        case _:
+                            if opcode == VCMPOpcode.TEXT.value:
+                                if self.vcmp.ws_client:
+                                    self._ws_send_user_msg(dec_contents.decode("utf-8"))
                 else:
                     logger.debug("Not data")
                     self.transport.close()
@@ -348,6 +388,38 @@ class VCMP:
                                 await self.ws_client.send(
                                     json.dumps({"event": "disconnect"})
                                 )
+                    case "send_message":
+                        if not self.peers:
+                            logger.debug("No peers are present")
+                            await websocket.close()
+                            return
+
+                        data = j.get("data")
+                        if not data:
+                            logger.debug("WS client didnt specify data field")
+                            await websocket.close()
+                            return
+
+                        logger.debug(f"Querying message send request: {data}")
+
+                        transports = list(self.peers.keys())
+                        peer_transport = transports[0]
+                        peer = self.peers[peer_transport]
+
+                        base: Base = peer["object"]
+                        base._send(VCMPOpcode.TEXT, data.encode())
+
+                    case "disconnect":
+                        if not self.peers:
+                            logger.debug("No peers are present")
+                            await websocket.close()
+                            return
+
+                        transports = list(self.peers.keys())
+                        peer_transport = transports[0]
+                        peer = self.peers[peer_transport]
+                        logger.debug("Closing peer connection")
+                        peer_transport.close()
 
             except json.JSONDecodeError:
                 logger.error("Failed to decode event json")
