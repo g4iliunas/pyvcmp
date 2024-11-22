@@ -120,10 +120,17 @@ class Base(asyncio.Protocol):
             )
         )
 
-    def _ws_send_user_msg(self, message: str):
+    def _ws_send_user_msg(self, message: str, channel_id: int, username: str):
         return asyncio.gather(
             self.vcmp.ws_client.send(
-                json.dumps({"event": "user_message", "data": message})
+                json.dumps(
+                    {
+                        "event": "user_message",
+                        "data": message,
+                        "channel_id": channel_id,
+                        "username": username,
+                    }
+                )
             )
         )
 
@@ -228,8 +235,11 @@ class ListenerProtocol(Base):
                                 self.transport.close()
                         case _:
                             if opcode == VCMPOpcode.TEXT.value:
-                                if self.vcmp.ws_client:
-                                    self._ws_send_user_msg(dec_contents.decode("utf-8"))
+                                d = json.loads(dec_contents)
+                                logger.debug(f"Loaded text json: {d}")
+
+                                # if self.vcmp.ws_client:
+                                #    self._ws_send_user_msg(d["data"], d["channel_id"], self.vcmp.peers[self.transport]["username"])
                 else:
                     logger.debug("Not data")
                     self.transport.close()
@@ -327,8 +337,11 @@ class PeerProtocol(Base):
                                 self.transport.close()
                         case _:
                             if opcode == VCMPOpcode.TEXT.value:
-                                if self.vcmp.ws_client:
-                                    self._ws_send_user_msg(dec_contents.decode("utf-8"))
+                                d = json.loads(dec_contents)
+                                logger.debug(f"Loaded text json: {d}")
+
+                                # if self.vcmp.ws_client:
+                                #    self._ws_send_user_msg(dec_contents.decode("utf-8"))
                 else:
                     logger.debug("Not data")
                     self.transport.close()
@@ -383,11 +396,9 @@ class VCMP:
 
                         except Exception as e:
                             logger.error("Failed to create a peer connection:", e)
-
-                            if self.ws_client:
-                                await self.ws_client.send(
-                                    json.dumps({"event": "disconnect"})
-                                )
+                            await self.ws_client.send(
+                                json.dumps({"event": "disconnect"})
+                            )
                     case "send_message":
                         if not self.peers:
                             logger.debug("No peers are present")
@@ -407,7 +418,23 @@ class VCMP:
                         peer = self.peers[peer_transport]
 
                         base: Base = peer["object"]
-                        base._send(VCMPOpcode.TEXT, data.encode())
+                        base._send(
+                            VCMPOpcode.TEXT, json.dumps({"data": data}).encode("utf-8")
+                        )
+
+                    case "invite":
+                        pass
+
+                    case "list":
+                        data = {"event": "list_peers", "peers": []}
+                        for _, peer in self.peers.items():
+                            data["peers"].append(
+                                {
+                                    "username": peer["username"],
+                                    "hostname": peer["hostname"],
+                                }
+                            )
+                        await websocket.send(json.dumps(data))
 
                     case "disconnect":
                         if not self.peers:

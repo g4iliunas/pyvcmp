@@ -102,7 +102,7 @@
 
             // Handle events
             if (message.event === "user_connect") {
-                appendMessage("New peer connected!");
+                appendMessage("New peer connected! Username: " + message.username + ", hostname: " + message.hostname);
 
                 connected = true;
                 messageInput.disabled = false;
@@ -123,6 +123,13 @@
 
             } else if (message.event == "user_message") {
                 appendMessage("Received message: " + message.data);
+            } else if (message.event == "list_peers") {
+                let i = 0;
+                message.peers.forEach(peer => {
+                    appendMessage("Listing peers:")
+                    appendMessage("-  ID: " + i + " - " + peer.username + " (" + peer.hostname + ")")
+                    i++;
+                });
             }
         };
 
@@ -178,11 +185,18 @@
     sendMessageBtn.addEventListener("click", function() {
         const message = messageInput.value;
         if (ws && message.trim() && connected) {
-            ws.send(JSON.stringify({
-                event: "send_message",
-                data: message
-            }));
-            appendMessage("You: " + message);
+            if (message == "/list") {
+                ws.send(JSON.stringify({
+                    event: "list"
+                }))
+            }
+            else {
+                ws.send(JSON.stringify({
+                    event: "send_message",
+                    data: message
+                }));
+                appendMessage("You: " + message);
+            }
             messageInput.value = "";
         }
     });
