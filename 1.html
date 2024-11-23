@@ -1,0 +1,225 @@
+<html>
+<head>
+    <title>VCMP</title>
+    <style>
+        /* Basic styles */
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f4f4;
+            display: flex;
+            justify-content: center; /* Center content horizontally */
+            align-items: center;     /* Center content vertically */
+            height: 100vh;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: row;
+            width: 80%;
+            max-width: 1200px; /* Maximum width for large screens */
+        }
+
+        /* Left column containing groups and peers */
+        #left-column {
+            display: flex;
+            flex-direction: column;
+            width: 250px;
+            padding: 10px;
+            background-color: #fff;
+            border-right: 1px solid #ddd;
+            overflow-y: auto;
+            height: 80vh;
+        }
+
+        /* Messages section */
+        #messages {
+            flex-grow: 1;
+            padding: 20px;
+            background-color: #f9f9f9;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            margin-left: 10px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end; /* Ensure input stays at the bottom */
+            height: 80vh; /* Same height as groups and peers */
+        }
+
+        /* Peer panel for selected group (to appear on the right) */
+        #peer_panel {
+            width: 250px;
+            padding: 10px;
+            background-color: #fff;
+            border-left: 1px solid #ddd;
+            display: none; /* Initially hidden */
+            height: 80vh;
+        }
+
+        /* Message input */
+        #message_input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            box-sizing: border-box;
+            margin-top: 20px;
+        }
+
+        /* Peer list styling */
+        .peer-list {
+            list-style-type: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .peer-list li {
+            padding: 5px;
+            background-color: #e9e9e9;
+            margin-bottom: 5px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .peer-list li:hover {
+            background-color: #d3d3d3;
+        }
+
+        /* Group list styling */
+        .group-list {
+            list-style-type: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .group-list li {
+            padding: 8px;
+            background-color: #e9e9e9;
+            margin-bottom: 5px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .group-list li:hover {
+            background-color: #d3d3d3;
+        }
+
+        /* Add a selected class to the active group */
+        .group-list li.selected {
+            background-color: #d3d3d3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Left column containing groups and peers -->
+        <div id="left-column">
+            <!-- Groups section -->
+            <div id="groups">
+                <h3>Groups</h3>
+                <ul class="group-list">
+                    <li onclick="showGroupChat('group1')">Group 1</li>
+                    <li onclick="showGroupChat('group2')">Group 2</li>
+                    <li onclick="showGroupChat('group3')">Group 3</li>
+                </ul>
+            </div>
+
+            <!-- Peers section -->
+            <div id="peers">
+                <h3>Peers</h3>
+                <ul class="peer-list">
+                    <li>Peer 1</li>
+                    <li>Peer 2</li>
+                    <li>Peer 3</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Messages section (content will switch dynamically) -->
+        <div id="messages">
+            <div id="message_output">
+                <!-- This will dynamically change based on selected group -->
+            </div>
+            <input type="text" id="message_input" placeholder="Enter message" onkeydown="handleMessageInput(event)" />
+        </div>
+
+        <!-- Peer panel (appears on the right when a group is selected) -->
+        <div id="peer_panel">
+            <h3>Peers in Group</h3>
+            <ul class="peer-list">
+                <li>Peer A</li>
+                <li>Peer B</li>
+                <li>Peer C</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // Object to store messages for each group
+        let groupMessages = {
+            group1: [],
+            group2: [],
+            group3: []
+        };
+
+        // Variable to track the currently selected group
+        let currentGroup = 'group1'; // Default to group1
+
+        // Function to switch between groups and show the correct chat
+        function showGroupChat(groupId) {
+            // Update the selected group
+            currentGroup = groupId;
+
+            // Update the group UI (highlight the selected group)
+            let groupItems = document.querySelectorAll('.group-list li');
+            groupItems.forEach(item => {
+                item.classList.remove('selected');
+                if (item.textContent.trim() === groupId.replace('group', 'Group')) {
+                    item.classList.add('selected');
+                }
+            });
+
+            // Update the message output area dynamically based on the selected group
+            let messageOutput = document.getElementById('message_output');
+            messageOutput.innerHTML = ""; // Clear the current messages before displaying the new group
+
+            // Display messages for the selected group
+            let messages = groupMessages[groupId];
+            messages.forEach(msg => {
+                let message = document.createElement('p');
+                message.textContent = msg;
+                messageOutput.appendChild(message);
+            });
+
+            // Display the message section
+            document.getElementById('messages').style.display = 'flex';
+
+            // Optionally show the peer panel for the selected group
+            document.getElementById('peer_panel').style.display = 'block';
+        }
+
+        // Handle input event to add new message
+        function handleMessageInput(event) {
+            if (event.key === 'Enter') {
+                let messageInput = document.getElementById('message_input');
+                let message = messageInput.value.trim();
+
+                if (message) {
+                    // Add the new message to the current group
+                    groupMessages[currentGroup].push(message); // Store the message in the respective group
+
+                    // Display the new message immediately in the current group chat
+                    showGroupChat(currentGroup); // Refresh messages display
+                }
+
+                // Clear input field after sending message
+                messageInput.value = '';
+            }
+        }
+
+        // Initially, show Group 1 chat (can be changed to any default group)
+        showGroupChat('group1');
+    </script>
+</body>
+</html>
