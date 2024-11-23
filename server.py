@@ -6,6 +6,7 @@ import json
 import socks5
 
 import struct
+import uuid
 
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
@@ -120,19 +121,82 @@ class Base(asyncio.Protocol):
             )
         )
 
-    def _ws_send_user_msg(self, message: str, channel_id: int, username: str):
+    def _ws_send_user_msg(self, message: str, channel_id: int = None):
+        data = {"event": "user_message", "data": message}
+        if channel_id:
+            data["channel_id"] = channel_id
+
+        return asyncio.gather(self.vcmp.ws_client.send(json.dumps(data)))
+
+    def _ws_notify_ch_invite(self, channel_id: str):
         return asyncio.gather(
             self.vcmp.ws_client.send(
                 json.dumps(
                     {
-                        "event": "user_message",
-                        "data": message,
+                        "event": "channel_pending_invite",
                         "channel_id": channel_id,
-                        "username": username,
                     }
                 )
             )
         )
+
+    def _handle_ch_invite(self, channel_id: str):
+        self.vcmp.pending_invites[channel_id] = self.transport
+        return self._ws_notify_ch_invite(channel_id)
+
+    def _handle_invite_end(self, channel_id: str):
+        return self._send(
+            VCMPOpcode.TEXT,
+            json.dumps(
+                {"event": "channel_invite_end", "channel_id": channel_id}
+            ).encode("utf-8"),
+        )
+
+    def _handle_ch_invite_ack(self, channel_id: str, status: bool):
+        if status:
+            # we distribute peer hostnames in the channel
+            return self._send(
+                VCMPOpcode.TEXT,
+                json.dumps(
+                    {
+                        "event": "channel_peer_hostnames",
+                        "channel_id": channel_id,
+                        "hostnames": [
+                            self.vcmp.peers[peer_transport]["hostname"]
+                            for peer_transport in self.vcmp.channels[channel_id]
+                        ],
+                    }
+                ).encode("utf-8"),
+            )
+        else:
+            return self._handle_invite_end(channel_id)
+
+    def _handle_events(self, d: dict):
+        match d["event"]:
+            case "message":
+                logger.debug("Received a message")
+                self._ws_send_user_msg(d["data"], d.get("channel_id"))
+
+            case "channel_invite":
+                logger.debug("Peer invited us to channel")
+                self._handle_ch_invite(d["channel_id"])
+
+            case "channel_invite_ack":
+                logger.debug("Received channel invite ACK")
+                self._handle_ch_invite_ack(d["channel_id"], d["status"])
+
+            case "channel_peer_hostnames":
+                hostnames = d["hostnames"]
+                logger.debug(f"Channel's peer hostnames: {hostnames}")
+
+                # todo: connect to every of those peers
+
+                self._handle_invite_end(d["channel_id"])
+                del self.vcmp.pending_invites[d["channel_id"]]
+
+            case "channel_invite_end":
+                logger.debug("Received channel invite end")
+                del self.vcmp.pending_invites[d["channel_id"]]
 
     def connection_lost(self, exc):
         if self.transport in self.vcmp.peers:
@@ -150,6 +214,8 @@ class Base(asyncio.Protocol):
 class ListenerProtocol(Base):
     def connection_made(self, transport):
         self.transport = transport
+        self.vcmp.transport = transport
+
         peername = transport.get_extra_info("peername")
         logger.info(f"Connection from {peername}")
 
@@ -237,9 +303,7 @@ class ListenerProtocol(Base):
                             if opcode == VCMPOpcode.TEXT.value:
                                 d = json.loads(dec_contents)
                                 logger.debug(f"Loaded text json: {d}")
-
-                                # if self.vcmp.ws_client:
-                                #    self._ws_send_user_msg(d["data"], d["channel_id"], self.vcmp.peers[self.transport]["username"])
+                                self._handle_events(d)
                 else:
                     logger.debug("Not data")
                     self.transport.close()
@@ -339,9 +403,7 @@ class PeerProtocol(Base):
                             if opcode == VCMPOpcode.TEXT.value:
                                 d = json.loads(dec_contents)
                                 logger.debug(f"Loaded text json: {d}")
-
-                                # if self.vcmp.ws_client:
-                                #    self._ws_send_user_msg(dec_contents.decode("utf-8"))
+                                self._handle_events(d)
                 else:
                     logger.debug("Not data")
                     self.transport.close()
@@ -362,8 +424,15 @@ class VCMP:
         self.username = username
         self.hostname = hostname
 
+        self.transport = None  # our peer transport
         self.ws_client: ServerConnection = None
+
         self.peers = dict()
+
+        # we dont include our own transport
+        # {"some_channel_hash": {"peer_transports": [transport1, transport2]}}
+        self.channels = dict()
+        self.pending_invites = dict()  # {"channel_id": peer_transport}
 
     async def ws_handler(self, websocket: ServerConnection):
         if self.ws_client:
@@ -411,19 +480,109 @@ class VCMP:
                             await websocket.close()
                             return
 
+                        channel_id: str = j.get("channel_id")  # hash
+                        peer_idx: int = j.get("peer_idx")
+
+                        if channel_id != None and peer_idx != None:
+                            logger.debug(
+                                "WS client specified both channel and peer ids"
+                            )
+                            await websocket.close()
+                            return
+
                         logger.debug(f"Querying message send request: {data}")
-
                         transports = list(self.peers.keys())
-                        peer_transport = transports[0]
-                        peer = self.peers[peer_transport]
 
-                        base: Base = peer["object"]
-                        base._send(
-                            VCMPOpcode.TEXT, json.dumps({"data": data}).encode("utf-8")
+                        if peer_idx:
+                            peer_transport = transports[peer_idx]
+                            self.peers[peer_transport]["object"]._send(
+                                VCMPOpcode.TEXT,
+                                json.dumps({"event": "message", "data": data}).encode(
+                                    "utf-8"
+                                ),
+                            )
+                        elif channel_id:
+                            # check if such channel exists
+                            channel = self.channels.get(channel_id)
+                            if not channel:
+                                logger.debug("Channel doesnt exist")
+                                await websocket.close()
+                                return
+
+                            # loop thru every peer in the channel (exclude us) and send our message
+                            for peer_transport in channel["peer_transports"]:
+                                self.peers[peer_transport]["object"]._send(
+                                    VCMPOpcode.TEXT,
+                                    json.dumps(
+                                        {
+                                            "event": "message",
+                                            "channel_id": channel_id,
+                                            "data": data,
+                                        }
+                                    ).encode("utf-8"),
+                                )
+                        else:
+                            logger.debug("WS client didnt specify destination field")
+                            await websocket.close()
+                            return
+
+                    case "channel_create":
+                        channel_id: str = uuid.uuid4().hex
+                        self.channels[channel_id] = {"peer_transport": []}
+                        await websocket.send(
+                            json.dumps(
+                                {"event": "channel_created", "channel_id": channel_id}
+                            )
                         )
 
                     case "invite":
-                        pass
+                        peer_idx = j.get("peer_idx")
+                        channel_id = j.get("channel_id")
+
+                        if not peer_idx and not channel_id:
+                            logger.debug("WS client didnt specify peer or channel id")
+                            await websocket.close()
+                            return
+
+                        if not self.channels.get(channel_id):
+                            logger.debug("Failed to resolve the channel")
+                            await websocket.close()
+                            return
+
+                        transports = list(self.peers.keys())
+                        peer_transport = transports[peer_idx]
+                        self.peers[peer_transport]["object"]._send(
+                            VCMPOpcode.TEXT,
+                            json.dumps(
+                                {"event": "channel_invite", "channel_id": channel_id}
+                            ).encode("utf-8"),
+                        )
+
+                    case "accept":
+                        channel_id: str = j.get("channel_id")
+                        status: bool = j.get("status")
+
+                        if not channel_id:
+                            logger.debug("No channel id")
+                            await websocket.close()
+                            return
+
+                        peer_transport = self.pending_invites.get(channel_id)
+                        if not peer_transport:
+                            logger.debug("No such pending channel invite exists")
+                            await websocket.close()
+                            return
+
+                        self.peers[peer_transport]["object"]._send(
+                            VCMPOpcode.TEXT,
+                            json.dumps(
+                                {
+                                    "event": "channel_invite_ack",
+                                    "status": status,
+                                    "channel_id": channel_id,
+                                }
+                            ).encode("utf-8"),
+                        )
 
                     case "list":
                         data = {"event": "list_peers", "peers": []}
@@ -437,13 +596,14 @@ class VCMP:
                         await websocket.send(json.dumps(data))
 
                     case "disconnect":
-                        if not self.peers:
-                            logger.debug("No peers are present")
+                        peer_idx = j.get("peer_idx")
+                        if not peer_idx:
+                            logger.debug("No such peer exists")
                             await websocket.close()
                             return
 
                         transports = list(self.peers.keys())
-                        peer_transport = transports[0]
+                        peer_transport = transports[peer_idx]
                         peer = self.peers[peer_transport]
                         logger.debug("Closing peer connection")
                         peer_transport.close()
